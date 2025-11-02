@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+from supabase import create_client
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
@@ -19,62 +20,23 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from datetime import datetime, timedelta
 
-# Try to import supabase, but provide fallback
-try:
-    from supabase import create_client
-    SUPABASE_AVAILABLE = True
-except ImportError:
-    SUPABASE_AVAILABLE = False
-    st.warning("Supabase package not available. Using sample data instead.")
-
 # Supabase configuration
 SUPABASE_URL = "https://fjfmgndbiespptmsnrff.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqZm1nbmRiaWVzcHB0bXNucmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMzk0NzQsImV4cCI6MjA3NjgxNTQ3NH0.FH9L41cIKXH_mVbl7szkb_CDKoyKdw97gOUhDOYJFnQ"
 
-def generate_sample_data():
-    """Generate sample data when Supabase is not available"""
-    st.info("Using sample data for demonstration purposes.")
-    
-    # Generate sample time series data
-    dates = pd.date_range(start='2024-01-01', end='2024-12-31', freq='H')
-    n_samples = len(dates)
-    
-    sample_data = {
-        'id': range(1, n_samples + 1),
-        'created_at': dates,
-        'temperature': 20 + 10 * np.sin(2 * np.pi * np.arange(n_samples) / 24) + np.random.normal(0, 2, n_samples),
-        'humidity': 50 + 20 * np.sin(2 * np.pi * np.arange(n_samples) / 12) + np.random.normal(0, 5, n_samples),
-        'co2': 400 + 100 * np.sin(2 * np.pi * np.arange(n_samples) / 48) + np.random.normal(0, 20, n_samples),
-        'co': 0.5 + 0.3 * np.sin(2 * np.pi * np.arange(n_samples) / 24) + np.random.normal(0, 0.1, n_samples),
-        'pm25': 15 + 10 * np.sin(2 * np.pi * np.arange(n_samples) / 36) + np.random.normal(0, 3, n_samples),
-        'pm10': 25 + 15 * np.sin(2 * np.pi * np.arange(n_samples) / 36) + np.random.normal(0, 5, n_samples)
-    }
-    
-    df = pd.DataFrame(sample_data)
-    return df
-
 @st.cache_resource
 def init_supabase():
-    if not SUPABASE_AVAILABLE:
-        return None
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @st.cache_data(ttl=300)
 def load_data():
-    # If supabase is not available, use sample data
-    if not SUPABASE_AVAILABLE:
-        return generate_sample_data()
-    
     try:
         supabase = init_supabase()
-        if supabase is None:
-            return generate_sample_data()
-            
         response = supabase.table('airquality').select('*').execute()
         
         if not response.data:
-            st.error("No data found in the database. Using sample data.")
-            return generate_sample_data()
+            st.error("No data found in the database.")
+            return pd.DataFrame()
             
         df = pd.DataFrame(response.data)
         
@@ -97,8 +59,8 @@ def load_data():
         
         return df
     except Exception as e:
-        st.error(f"Error loading data from Supabase: {e}. Using sample data instead.")
-        return generate_sample_data()
+        st.error(f"Error loading data: {e}")
+        return pd.DataFrame()
 
 def create_features(df, target_columns, n_lags=3):
     """Create lag features for time series prediction with better handling"""
@@ -163,32 +125,40 @@ def prepare_lstm_data(df, target_columns, sequence_length=10):
     return np.array(X), np.array(y)
 
 def train_random_forest(X_train, X_test, y_train, y_test, target_columns):
-    """Train Random Forest model using training data only"""
+    """Train Random Forest model using all data"""
     models = {}
     predictions = {}
     scores = {}
     
+    # Use all data for training
+    X_all = np.vstack([X_train, X_test])
+    y_all = np.vstack([y_train, y_test])
+    
     for i, col in enumerate(target_columns):
         rf = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1)
-        rf.fit(X_train, y_train[:, i])
+        rf.fit(X_all, y_all[:, i])
         
-        # Predict on test data
-        pred = rf.predict(X_test)
+        # Predict on all data
+        pred = rf.predict(X_all)
         
         models[col] = rf
         predictions[col] = pred
         scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_test[:, i], pred)),
-            'r2': r2_score(y_test[:, i], pred)
+            'rmse': np.sqrt(mean_squared_error(y_all[:, i], pred)),
+            'r2': r2_score(y_all[:, i], pred)
         }
     
     return models, predictions, scores
 
 def train_xgboost(X_train, X_test, y_train, y_test, target_columns):
-    """Train XGBoost model using training data only"""
+    """Train XGBoost model using all data"""
     models = {}
     predictions = {}
     scores = {}
+    
+    # Use all data for training
+    X_all = np.vstack([X_train, X_test])
+    y_all = np.vstack([y_train, y_test])
     
     for i, col in enumerate(target_columns):
         xgb_model = xgb.XGBRegressor(
@@ -197,63 +167,68 @@ def train_xgboost(X_train, X_test, y_train, y_test, target_columns):
             random_state=42,
             n_jobs=-1
         )
-        xgb_model.fit(X_train, y_train[:, i])
+        xgb_model.fit(X_all, y_all[:, i])
         
-        # Predict on test data
-        pred = xgb_model.predict(X_test)
+        # Predict on all data
+        pred = xgb_model.predict(X_all)
         
         models[col] = xgb_model
         predictions[col] = pred
         scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_test[:, i], pred)),
-            'r2': r2_score(y_test[:, i], pred)
+            'rmse': np.sqrt(mean_squared_error(y_all[:, i], pred)),
+            'r2': r2_score(y_all[:, i], pred)
         }
     
     return models, predictions, scores
 
 def train_svm(X_train, X_test, y_train, y_test, target_columns):
-    """Train SVM model using training data only"""
+    """Train SVM model using all data"""
+    # Use all data for training
+    X_all = np.vstack([X_train, X_test])
+    y_all = np.vstack([y_train, y_test])
+    
     # Scale the data for SVM
     scaler_X = StandardScaler()
     scaler_y = StandardScaler()
     
-    X_train_scaled = scaler_X.fit_transform(X_train)
-    X_test_scaled = scaler_X.transform(X_test)
-    y_train_scaled = scaler_y.fit_transform(y_train)
+    X_all_scaled = scaler_X.fit_transform(X_all)
+    y_all_scaled = scaler_y.fit_transform(y_all)
     
     # Use MultiOutputRegressor for multiple targets
     svm_model = MultiOutputRegressor(SVR(kernel='rbf', C=1.0))
-    svm_model.fit(X_train_scaled, y_train_scaled)
+    svm_model.fit(X_all_scaled, y_all_scaled)
     
-    pred_scaled = svm_model.predict(X_test_scaled)
+    pred_scaled = svm_model.predict(X_all_scaled)
     predictions = scaler_y.inverse_transform(pred_scaled)
     
     scores = {}
     for i, col in enumerate(target_columns):
         scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_test[:, i], predictions[:, i])),
-            'r2': r2_score(y_test[:, i], predictions[:, i])
+            'rmse': np.sqrt(mean_squared_error(y_all[:, i], predictions[:, i])),
+            'r2': r2_score(y_all[:, i], predictions[:, i])
         }
     
     return svm_model, predictions, scores, scaler_X, scaler_y
 
 def train_lstm(X_train, X_test, y_train, y_test, target_columns):
-    """Train LSTM model using training data only"""
+    """Train LSTM model using all data"""
+    # Use all data for training
+    X_all = np.vstack([X_train, X_test])
+    y_all = np.vstack([y_train, y_test])
+    
     # Scale the data
     scaler_X = StandardScaler()
     scaler_y = StandardScaler()
     
     # Reshape for scaling
-    X_train_reshaped = X_train.reshape(-1, X_train.shape[2])
-    X_test_reshaped = X_test.reshape(-1, X_test.shape[2])
+    X_all_reshaped = X_all.reshape(-1, X_all.shape[2])
     
-    X_train_scaled = scaler_X.fit_transform(X_train_reshaped).reshape(X_train.shape)
-    X_test_scaled = scaler_X.transform(X_test_reshaped).reshape(X_test.shape)
-    y_train_scaled = scaler_y.fit_transform(y_train)
+    X_all_scaled = scaler_X.fit_transform(X_all_reshaped).reshape(X_all.shape)
+    y_all_scaled = scaler_y.fit_transform(y_all)
     
     # Build LSTM model
     model = Sequential([
-        LSTM(32, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+        LSTM(32, return_sequences=True, input_shape=(X_all.shape[1], X_all.shape[2])),
         Dropout(0.2),
         LSTM(32, return_sequences=False),
         Dropout(0.2),
@@ -265,22 +240,22 @@ def train_lstm(X_train, X_test, y_train, y_test, target_columns):
     
     # Train model
     history = model.fit(
-        X_train_scaled, y_train_scaled,
+        X_all_scaled, y_all_scaled,
         epochs=30,
         batch_size=16,
-        validation_data=(X_test_scaled, scaler_y.transform(y_test)),
+        validation_split=0.2,
         verbose=0
     )
     
-    # Make predictions on test data
-    pred_scaled = model.predict(X_test_scaled, verbose=0)
+    # Make predictions on all data
+    pred_scaled = model.predict(X_all_scaled, verbose=0)
     predictions = scaler_y.inverse_transform(pred_scaled)
     
     scores = {}
     for i, col in enumerate(target_columns):
         scores[col] = {
-            'rmse': np.sqrt(mean_squared_error(y_test[:, i], predictions[:, i])),
-            'r2': r2_score(y_test[:, i], predictions[:, i])
+            'rmse': np.sqrt(mean_squared_error(y_all[:, i], predictions[:, i])),
+            'r2': r2_score(y_all[:, i], predictions[:, i])
         }
     
     return model, predictions, scores, history, scaler_X, scaler_y
@@ -472,21 +447,25 @@ def main():
     st.title("🌤️ Air Quality Prediction Dashboard")
     st.markdown("""
     This app predicts future values of PM2.5, PM10, CO2, CO, Temperature, and Humidity using multiple machine learning models.
-    **Only the last 2000 samples are used for training** and continuous predictions are shown in hourly and weekly plots.
+    **All data is used for training** and continuous predictions are shown in hourly and weekly plots.
     """)
     
     # Load data
-    with st.spinner('Loading data...'):
+    with st.spinner('Loading data from Supabase...'):
         df = load_data()
+    # Use only the last 2000 samples for training as requested
+    try:
+        if len(df) > 2000:
+            df = df.tail(2000).reset_index(drop=True)
+            st.info('Using last 2000 samples for training.')
+        else:
+            st.info(f'Using all available samples for training ({len(df)} samples) since fewer than 2000 were available.')
+    except Exception as e:
+        st.warning(f'Could not limit to last 2000 samples: {e}')
     
     if df.empty:
-        st.error("No data loaded. Please check your connection.")
+        st.error("No data loaded. Please check your Supabase connection and ensure the 'airquality' table exists.")
         return
-    
-    # Use only the last 2000 samples for training
-    if len(df) > 2000:
-        df = df.tail(2000)
-        st.info(f"Using only the last 2000 samples for training (from {df['created_at'].min().strftime('%Y-%m-%d %H:%M')} to {df['created_at'].max().strftime('%Y-%m-%d %H:%M')})")
     
     # Show data quality information
     st.header("📊 Data Quality Check")
@@ -596,7 +575,7 @@ def main():
     X = df_eng[feature_cols].values
     y = df_eng[selected_targets].values
     
-    # Split data for training and testing
+    # Split data for initial evaluation (but we'll use all data for final training)
     test_size = 0.2
     
     if len(X) < 2:
@@ -607,7 +586,7 @@ def main():
     
     # Model training section
     st.header("🤖 Model Training & Evaluation")
-    st.info("⚠️ Only the last 2000 samples are used for training the models")
+    st.info("⚠️ All available data is used for training the models")
     
     all_models = {}
     all_predictions = {}
@@ -621,13 +600,13 @@ def main():
         'LSTM': 'LSTM'
     }
     
-    # Train selected models using training data only
+    # Train selected models using all data
     for model_name in models_to_train:
         st.subheader(f"{model_name} Model")
         model_key = model_keys[model_name]
         
         try:
-            with st.spinner(f'Training {model_name}...'):
+            with st.spinner(f'Training {model_name} with all data...'):
                 if model_name == 'Random Forest':
                     models, predictions, scores = train_random_forest(X_train, X_test, y_train, y_test, selected_targets)
                     all_models[model_key] = models
@@ -659,7 +638,7 @@ def main():
                         st.warning("Not enough sequences for LSTM training. Skipping LSTM.")
                         continue
                     
-                    # Split LSTM data
+                    # Split LSTM data for initial setup
                     split_idx = int(len(X_lstm) * (1 - test_size))
                     X_train_lstm, X_test_lstm = X_lstm[:split_idx], X_lstm[split_idx:]
                     y_train_lstm, y_test_lstm = y_lstm[:split_idx], y_lstm[split_idx:]
