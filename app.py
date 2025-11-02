@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from supabase import create_client
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
@@ -18,47 +17,74 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from datetime import datetime, timedelta
 
-# Supabase configuration
-SUPABASE_URL = "https://fjfmgndbiespptmsnrff.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqZm1nbmRiaWVzcHB0bXNucmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMzk0NzQsImV4cCI6MjA3NjgxNTQ3NH0.FH9L41cIKXH_mVbl7szkb_CDKoyKdw97gOUhDOYJFnQ"
-
-@st.cache_resource
-def init_supabase():
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def generate_sample_data(num_samples=1000):
+    """Generate sample air quality data for demonstration"""
+    dates = pd.date_range(start='2024-01-01', periods=num_samples, freq='H')
+    
+    np.random.seed(42)
+    
+    data = {
+        'id': range(1, num_samples + 1),
+        'created_at': dates,
+        'temperature': 20 + 10 * np.sin(2 * np.pi * np.arange(num_samples) / 24) + np.random.normal(0, 2, num_samples),
+        'humidity': 50 + 20 * np.sin(2 * np.pi * np.arange(num_samples) / 24 + np.pi/4) + np.random.normal(0, 5, num_samples),
+        'co2': 400 + 100 * np.sin(2 * np.pi * np.arange(num_samples) / 168) + np.random.normal(0, 25, num_samples),
+        'co': 1 + 0.5 * np.sin(2 * np.pi * np.arange(num_samples) / 24) + np.random.exponential(0.1, num_samples),
+        'pm25': 15 + 10 * np.sin(2 * np.pi * np.arange(num_samples) / 24) + np.random.gamma(2, 2, num_samples),
+        'pm10': 25 + 15 * np.sin(2 * np.pi * np.arange(num_samples) / 24) + np.random.gamma(2, 3, num_samples)
+    }
+    
+    df = pd.DataFrame(data)
+    
+    # Add some missing values randomly (5% of data)
+    mask = np.random.random(df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].shape) < 0.05
+    df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']] = df[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].where(~mask, np.nan)
+    
+    return df
 
 @st.cache_data(ttl=300)
-def load_data():
-    try:
-        supabase = init_supabase()
-        response = supabase.table('airquality').select('*').execute()
-        
-        if not response.data:
-            st.error("No data found in the database.")
-            return pd.DataFrame()
+def load_data(use_sample_data=True):
+    """Load data from Supabase or use sample data"""
+    if use_sample_data:
+        st.info("📊 Using sample data for demonstration")
+        return generate_sample_data(1000)
+    else:
+        try:
+            # Your original Supabase code here
+            from supabase import create_client
             
-        df = pd.DataFrame(response.data)
-        
-        # Convert columns to appropriate data types
-        df['created_at'] = pd.to_datetime(df['created_at'])
-        df = df.sort_values('created_at')
-        
-        # Convert numeric columns
-        numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-        for col in numeric_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        # Fill missing values with forward fill and then backward fill
-        df[numeric_cols] = df[numeric_cols].fillna(method='ffill').fillna(method='bfill')
-        
-        # If there are still missing values, fill with column mean
-        for col in numeric_cols:
-            if df[col].isna().any():
-                df[col] = df[col].fillna(df[col].mean())
-        
-        return df
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
-        return pd.DataFrame()
+            SUPABASE_URL = "https://fjfmgndbiespptmsnrff.supabase.co"
+            SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqZm1nbmRiaWVzcHB0bXNucmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMzk0NzQsImV4cCI6MjA3NjgxNTQ3NH0.FH9L41cIKXH_mVbl7szkb_CDKoyKdw97gOUhDOYJFnQ"
+
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            response = supabase.table('airquality').select('*').execute()
+            
+            if not response.data:
+                st.error("No data found in the database. Using sample data instead.")
+                return generate_sample_data(1000)
+                
+            df = pd.DataFrame(response.data)
+            
+            # Convert columns to appropriate data types
+            df['created_at'] = pd.to_datetime(df['created_at'])
+            df = df.sort_values('created_at')
+            
+            # Convert numeric columns
+            numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
+            for col in numeric_cols:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # Fill missing values
+            df[numeric_cols] = df[numeric_cols].fillna(method='ffill').fillna(method='bfill')
+            
+            for col in numeric_cols:
+                if df[col].isna().any():
+                    df[col] = df[col].fillna(df[col].mean())
+            
+            return df
+        except Exception as e:
+            st.error(f"Error loading data from Supabase: {e}. Using sample data instead.")
+            return generate_sample_data(1000)
 
 def create_features(df, target_columns, n_lags=3):
     """Create lag features for time series prediction with better handling"""
@@ -519,12 +545,17 @@ def main():
     **Compare LSTM, Random Forest, and XGBoost models** and see their predictions in hourly and weekly plots.
     """)
     
+    # Data source selection
+    st.sidebar.header("Data Configuration")
+    use_sample_data = st.sidebar.checkbox("Use Sample Data", value=True, 
+                                         help="Use generated sample data instead of Supabase")
+    
     # Load data
-    with st.spinner('Loading data from Supabase...'):
-        df = load_data()
+    with st.spinner('Loading data...'):
+        df = load_data(use_sample_data=use_sample_data)
     
     if df.empty:
-        st.error("No data loaded. Please check your Supabase connection and ensure the 'airquality' table exists.")
+        st.error("No data loaded. Please check your configuration.")
         return
     
     # Show data quality information
@@ -566,7 +597,7 @@ def main():
         })
         st.dataframe(missing_df)
     
-    st.sidebar.header("Configuration")
+    st.sidebar.header("Model Configuration")
     
     # Target selection
     target_columns = ['pm25', 'pm10', 'co2', 'co', 'temperature', 'humidity']
@@ -652,17 +683,6 @@ def main():
         
         Please check your data quality and try again.
         """)
-        
-        # Show diagnostic information
-        st.subheader("Diagnostic Information")
-        st.write(f"Original data shape: {df_subset.shape}")
-        st.write(f"Columns in original data: {list(df_subset.columns)}")
-        st.write(f"Data types: {df_subset.dtypes}")
-        
-        # Check for any rows with all NaN values
-        all_nan_rows = df_subset[['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']].isna().all(axis=1).sum()
-        st.write(f"Rows with all NaN values: {all_nan_rows}")
-        
         return
     
     # Prepare data for traditional ML models
@@ -766,8 +786,6 @@ def main():
                 
         except Exception as e:
             st.error(f"Error training {model_name}: {str(e)}")
-            import traceback
-            st.error(f"Detailed error: {traceback.format_exc()}")
             continue
     
     # Model comparison
@@ -818,8 +836,6 @@ def main():
                     
         except Exception as e:
             st.error(f"Error generating predictions: {str(e)}")
-            import traceback
-            st.error(f"Detailed error: {traceback.format_exc()}")
 
 if __name__ == "__main__":
     main()
