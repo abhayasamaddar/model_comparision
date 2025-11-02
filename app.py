@@ -1,131 +1,128 @@
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
+import plotly.express as px
 from supabase import create_client, Client
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.svm import SVR
-from sklearn.multioutput import MultiOutputRegressor
-from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, r2_score
 import xgboost as xgb
-import tensorflow as tf
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from datetime import datetime
+from tensorflow.keras.layers import Dense, LSTM
+from tensorflow.keras.callbacks import EarlyStopping
 
-st.set_page_config(page_title="Air Quality Model Comparison", layout="wide")
+# -------------------------------
+# 🔐 Connect to Supabase
+# -------------------------------
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --------------------- Supabase Setup ---------------------
-SUPABASE_URL = st.secrets["https://fjfmgndbiespptmsnrff.supabase.co"]
-SUPABASE_KEY = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqZm1nbmRiaWVzcHB0bXNucmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMzk0NzQsImV4cCI6MjA3NjgxNTQ3NH0.FH9L41cIKXH_mVbl7szkb_CDKoyKdw97gOUhDOYJFnQ"]
+st.title("🌍 Air Quality Prediction Dashboard")
+st.write("Comparison of **Random Forest**, **XGBoost**, and **LSTM** models using the last 2000 samples.")
 
-@st.cache_resource
-def init_supabase() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-@st.cache_data(ttl=300)
+# -------------------------------
+# 📥 Load Data
+# -------------------------------
+@st.cache_data
 def load_data():
-    supabase = init_supabase()
-    response = supabase.table('airquality').select('*').execute()
-    if not response.data:
-        st.error("No data found in Supabase table.")
-        return pd.DataFrame()
-
-    df = pd.DataFrame(response.data)
-    df['created_at'] = pd.to_datetime(df['created_at'])
-    df = df.sort_values('created_at')
-
-    numeric_cols = ['temperature', 'humidity', 'co2', 'co', 'pm25', 'pm10']
-    for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(method='ffill').fillna(method='bfill').fillna(df[col].mean())
+    data = supabase.table("airquality").select("*").execute()
+    df = pd.DataFrame(data.data)
     return df
 
-def create_features(df, target_columns, n_lags=3):
-    df_eng = df.copy()
-    safe_n_lags = min(n_lags, len(df_eng) - 1)
-    for col in target_columns:
-        for lag in range(1, safe_n_lags + 1):
-            df_eng[f"{col}_lag_{lag}"] = df_eng[col].shift(lag)
-    df_eng = df_eng.dropna().reset_index(drop=True)
-    return df_eng
-
-# --------------------- Streamlit App ---------------------
-st.title("🌍 Air Quality Prediction — Model Comparison")
-
-with st.spinner("Loading data..."):
-    df = load_data()
+df = load_data()
 
 if df.empty:
+    st.error("No data found in Supabase table 'airquality'.")
     st.stop()
 
-# Use only last 2000 samples
-if len(df) > 2000:
-    df = df.tail(2000).reset_index(drop=True)
-    st.info(f"Using last 2000 samples for training. ({len(df)} samples)")
-else:
-    st.info(f"Using all {len(df)} samples for training.")
+# -------------------------------
+# 🧹 Preprocess
+# -------------------------------
+df = df.sort_values(by=df.columns[0])  # sort by timestamp/ID if present
+df = df.tail(2000)  # use last 2000 samples only
 
-st.write("### Data Preview")
-st.dataframe(df.tail(10))
+# Drop non-numeric columns
+numeric_df = df.select_dtypes(include=[np.number])
+if numeric_df.empty:
+    st.error("No numeric columns found for model training.")
+    st.stop()
 
-target_columns = ['pm25', 'pm10', 'co2', 'co', 'temperature', 'humidity']
-df_eng = create_features(df, target_columns)
-features = [c for c in df_eng.columns if c not in target_columns + ['id', 'created_at']]
+X = numeric_df.drop(columns=numeric_df.columns[-1])  # all except target
+y = numeric_df[numeric_df.columns[-1]]  # target variable
 
-X = df_eng[features].values
-y = df_eng[target_columns].values
-scaler = StandardScaler()
+scaler = MinMaxScaler()
 X_scaled = scaler.fit_transform(X)
 
-# ------------------ Train Models ------------------
-models = {
-    "Random Forest": MultiOutputRegressor(RandomForestRegressor(n_estimators=100, random_state=42)),
-    "XGBoost": MultiOutputRegressor(xgb.XGBRegressor(objective="reg:squarederror", n_estimators=100)),
-    "LSTM": None  # LSTM handled separately
-}
+X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, shuffle=False)
 
-st.subheader("Training Traditional Models")
-results = {}
+# -------------------------------
+# 🌳 Random Forest
+# -------------------------------
+rf = RandomForestRegressor(n_estimators=100, random_state=42)
+rf.fit(X_train, y_train)
+rf_pred = rf.predict(X_test)
+rf_rmse = mean_squared_error(y_test, rf_pred, squared=False)
+rf_r2 = r2_score(y_test, rf_pred)
 
-for name, model in models.items():
-    if model is None:
-        continue
-    model.fit(X_scaled, y)
-    preds = model.predict(X_scaled)
-    rmse = np.sqrt(mean_squared_error(y, preds))
-    r2 = r2_score(y, preds)
-    results[name] = {"RMSE": rmse, "R²": r2}
-    st.success(f"{name}: RMSE={rmse:.3f}, R²={r2:.3f}")
+# -------------------------------
+# ⚡ XGBoost
+# -------------------------------
+xgb_model = xgb.XGBRegressor(objective='reg:squarederror', n_estimators=100, random_state=42)
+xgb_model.fit(X_train, y_train)
+xgb_pred = xgb_model.predict(X_test)
+xgb_rmse = mean_squared_error(y_test, xgb_pred, squared=False)
+xgb_r2 = r2_score(y_test, xgb_pred)
 
-# ------------------ LSTM ------------------
-st.subheader("Training LSTM Model")
-X_lstm = np.reshape(X_scaled, (X_scaled.shape[0], 1, X_scaled.shape[1]))
+# -------------------------------
+# 🔁 LSTM
+# -------------------------------
+X_lstm = X_scaled.reshape((X_scaled.shape[0], X_scaled.shape[1], 1))
+X_train_lstm, X_test_lstm = X_lstm[:int(0.8 * len(X_lstm))], X_lstm[int(0.8 * len(X_lstm)):]
+y_train_lstm, y_test_lstm = y[:int(0.8 * len(y))], y[int(0.8 * len(y)):]
 
-model_lstm = Sequential([
-    LSTM(64, input_shape=(1, X_scaled.shape[1]), return_sequences=False),
-    Dropout(0.2),
-    Dense(y.shape[1])
+lstm_model = Sequential([
+    LSTM(64, activation='relu', input_shape=(X_train_lstm.shape[1], 1)),
+    Dense(1)
 ])
-model_lstm.compile(optimizer='adam', loss='mse')
-model_lstm.fit(X_lstm, y, epochs=10, batch_size=16, verbose=0)
-pred_lstm = model_lstm.predict(X_lstm)
-rmse_lstm = np.sqrt(mean_squared_error(y, pred_lstm))
-r2_lstm = r2_score(y, pred_lstm)
-results["LSTM"] = {"RMSE": rmse_lstm, "R²": r2_lstm}
-st.success(f"LSTM: RMSE={rmse_lstm:.3f}, R²={r2_lstm:.3f}")
+lstm_model.compile(optimizer='adam', loss='mse')
+early_stop = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
+lstm_model.fit(X_train_lstm, y_train_lstm, epochs=25, batch_size=32, verbose=0, callbacks=[early_stop])
 
-# ------------------ Plot Comparison ------------------
-st.subheader("📊 Model Performance Comparison")
-fig = make_subplots(rows=1, cols=2, subplot_titles=("RMSE", "R²"))
-names = list(results.keys())
-rmse_vals = [results[m]["RMSE"] for m in names]
-r2_vals = [results[m]["R²"] for m in names]
+lstm_pred = lstm_model.predict(X_test_lstm).flatten()
+lstm_rmse = mean_squared_error(y_test_lstm, lstm_pred, squared=False)
+lstm_r2 = r2_score(y_test_lstm, lstm_pred)
 
-fig.add_trace(go.Bar(x=names, y=rmse_vals, name="RMSE"), 1, 1)
-fig.add_trace(go.Bar(x=names, y=r2_vals, name="R²"), 1, 2)
-fig.update_layout(height=400, width=900, showlegend=False)
-st.plotly_chart(fig)
+# -------------------------------
+# 📊 Show Results
+# -------------------------------
+results = pd.DataFrame({
+    'Model': ['Random Forest', 'XGBoost', 'LSTM'],
+    'RMSE': [rf_rmse, xgb_rmse, lstm_rmse],
+    'R² Score': [rf_r2, xgb_r2, lstm_r2]
+})
 
-st.success("✅ Training complete and models compared successfully!")
+st.subheader("📈 Model Comparison Metrics")
+st.dataframe(results)
+
+# Plot comparison
+fig = px.bar(results, x='Model', y='RMSE', color='Model', title='Model RMSE Comparison', text_auto='.2f')
+st.plotly_chart(fig, use_container_width=True)
+
+# -------------------------------
+# 🔍 Detailed Plots
+# -------------------------------
+st.subheader("🔍 Model Predictions")
+
+def plot_predictions(y_true, y_pred, title):
+    df_plot = pd.DataFrame({'True': y_true, 'Predicted': y_pred})
+    fig = px.line(df_plot, title=title)
+    st.plotly_chart(fig, use_container_width=True)
+
+plot_predictions(y_test, rf_pred, "Random Forest Prediction vs True")
+plot_predictions(y_test, xgb_pred, "XGBoost Prediction vs True")
+plot_predictions(y_test_lstm, lstm_pred, "LSTM Prediction vs True")
+
+st.success("✅ Model training and comparison complete using last 2000 samples!")
