@@ -16,8 +16,8 @@ from tensorflow.keras.callbacks import EarlyStopping
 # -------------------------------
 # 🔐 Connect to Supabase
 # -------------------------------
-SUPABASE_URL = st.secrets["SUPABASE_URL"]
-SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+SUPABASE_URL = st.secrets["https://fjfmgndbiespptmsnrff.supabase.co"]
+SUPABASE_KEY = st.secrets["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqZm1nbmRiaWVzcHB0bXNucmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMzk0NzQsImV4cCI6MjA3NjgxNTQ3NH0.FH9L41cIKXH_mVbl7szkb_CDKoyKdw97gOUhDOYJFnQ"]
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.title("🌍 Air Quality Prediction Dashboard")
