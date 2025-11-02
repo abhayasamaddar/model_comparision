@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from supabase import create_client
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import warnings
@@ -20,23 +19,62 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 from datetime import datetime, timedelta
 
+# Try to import supabase, but provide fallback
+try:
+    from supabase import create_client
+    SUPABASE_AVAILABLE = True
+except ImportError:
+    SUPABASE_AVAILABLE = False
+    st.warning("Supabase package not available. Using sample data instead.")
+
 # Supabase configuration
 SUPABASE_URL = "https://fjfmgndbiespptmsnrff.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZqZm1nbmRiaWVzcHB0bXNucmZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjEyMzk0NzQsImV4cCI6MjA3NjgxNTQ3NH0.FH9L41cIKXH_mVbl7szkb_CDKoyKdw97gOUhDOYJFnQ"
 
+def generate_sample_data():
+    """Generate sample data when Supabase is not available"""
+    st.info("Using sample data for demonstration purposes.")
+    
+    # Generate sample time series data
+    dates = pd.date_range(start='2024-01-01', end='2024-12-31', freq='H')
+    n_samples = len(dates)
+    
+    sample_data = {
+        'id': range(1, n_samples + 1),
+        'created_at': dates,
+        'temperature': 20 + 10 * np.sin(2 * np.pi * np.arange(n_samples) / 24) + np.random.normal(0, 2, n_samples),
+        'humidity': 50 + 20 * np.sin(2 * np.pi * np.arange(n_samples) / 12) + np.random.normal(0, 5, n_samples),
+        'co2': 400 + 100 * np.sin(2 * np.pi * np.arange(n_samples) / 48) + np.random.normal(0, 20, n_samples),
+        'co': 0.5 + 0.3 * np.sin(2 * np.pi * np.arange(n_samples) / 24) + np.random.normal(0, 0.1, n_samples),
+        'pm25': 15 + 10 * np.sin(2 * np.pi * np.arange(n_samples) / 36) + np.random.normal(0, 3, n_samples),
+        'pm10': 25 + 15 * np.sin(2 * np.pi * np.arange(n_samples) / 36) + np.random.normal(0, 5, n_samples)
+    }
+    
+    df = pd.DataFrame(sample_data)
+    return df
+
 @st.cache_resource
 def init_supabase():
+    if not SUPABASE_AVAILABLE:
+        return None
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 @st.cache_data(ttl=300)
 def load_data():
+    # If supabase is not available, use sample data
+    if not SUPABASE_AVAILABLE:
+        return generate_sample_data()
+    
     try:
         supabase = init_supabase()
+        if supabase is None:
+            return generate_sample_data()
+            
         response = supabase.table('airquality').select('*').execute()
         
         if not response.data:
-            st.error("No data found in the database.")
-            return pd.DataFrame()
+            st.error("No data found in the database. Using sample data.")
+            return generate_sample_data()
             
         df = pd.DataFrame(response.data)
         
@@ -59,8 +97,8 @@ def load_data():
         
         return df
     except Exception as e:
-        st.error(f"Error loading data: {e}")
-        return pd.DataFrame()
+        st.error(f"Error loading data from Supabase: {e}. Using sample data instead.")
+        return generate_sample_data()
 
 def create_features(df, target_columns, n_lags=3):
     """Create lag features for time series prediction with better handling"""
@@ -438,11 +476,11 @@ def main():
     """)
     
     # Load data
-    with st.spinner('Loading data from Supabase...'):
+    with st.spinner('Loading data...'):
         df = load_data()
     
     if df.empty:
-        st.error("No data loaded. Please check your Supabase connection and ensure the 'airquality' table exists.")
+        st.error("No data loaded. Please check your connection.")
         return
     
     # Use only the last 2000 samples for training
